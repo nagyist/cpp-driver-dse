@@ -1,0 +1,5 @@
+SHA: ffa981d1728163f8b3d0961c127ef924d68ef84c
+URL: https://github.com/cesanta/mongoose/tree/ffa981d
+Commit Date: 2016/09/16
+
+Only mongoose.c and mongoose.h files are required
