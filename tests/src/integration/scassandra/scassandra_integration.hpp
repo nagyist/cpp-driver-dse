@@ -23,29 +23,78 @@ public:
 
   ~SCassandraIntegration();
 
+  static void SetUpTestCase();
+
   void SetUp();
 
   void TearDown();
+
+  static void TearDownTestCase();
 
 protected:
   /**
    * SCassandra cluster (manager) instance
    */
-  SharedPtr<test::SCassandraCluster> scc_;
+  static SharedPtr<test::SCassandraCluster> scc_;
   /**
    * Setting to determine if SCassandra cluster should be started. True if
    * SCassandracluster should be started; false otherwise.
    * (DEFAULT: true)
    */
   bool is_scc_start_requested_;
+  /**
+   * Setting to determine if SCassandra cluster is being used for the entire
+   * test case or if it should be re-initialized per test. True if for the
+   * test case; false otherwise.
+   * (DEFAULT: true)
+   */
+  bool is_scc_for_test_case_;
 
   /**
-   * Generate the token ranges (no v-nodes) for a single data center
+   * Execute a mock query at a given consistency level
    *
-   * @param nodes Number of nodes to generate tokens for
-   * @return Token ranges for each node
+   * @param consistency Consistency level to execute mock query at
+   * @return Result object
+   * @see prime_mock_query Primes all nodes with a successful mock query
+   * @see prime_mock_query_with_error Primes the given node with with an error
+   *                                  for the mock query and primes the
+   *                                  remaining nodes with a successful mock
+   *                                  query
    */
-  std::vector<std::string> generate_token_ranges(unsigned int nodes);
+  virtual test::driver::Result execute_mock_query(
+    CassConsistency consistency = CASS_CONSISTENCY_ONE);
+  /**
+   * Prime the successful mock query on the given node
+   *
+   * @param node Node to apply the successful mock query on; if node == 0 the
+   *             successful mock query will be applied to all nodes in the
+   *             SCassandra cluster
+   *             (DEFAULT: 0 - Apply mock query with success to all nodes
+   */
+  void prime_mock_query(unsigned int node = 0);
+  /**
+   * Prime the mock query with a simulated error result on the given node while
+   * priming the remaining nodes in the SCassandra cluster with a successful
+   * mock query
+   *
+   * @param result Resulting error to apply to the given node
+   * @param node Node to apply the error on; if node == 0 the mock query will
+   *             be applied to all nodes in the SCassandra cluster with the
+   *             resulting error
+   *             (DEFAULT: 0 - Apply mock query with error to all nodes
+   */
+  void prime_mock_query_with_error(PrimingResult result, unsigned int node = 0);
+
+private:
+  /**
+   * Flag to determine if the SCassandra cluster instance has already been
+   * initialized
+   */
+  static bool is_scc_initialized_;
+  /**
+   * A mocked query without the PrimingResult assigned
+   */
+  static const PrimingRequest mock_query_;
 };
 
 #endif //__SCASSANDRA_INTEGRATION_HPP__

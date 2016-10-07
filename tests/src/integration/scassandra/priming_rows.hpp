@@ -51,7 +51,7 @@ public:
    * @param value Value for the column
    * @return PrimingRow instance
    */
-  PrimingRow& addColumn(const std::string& name,
+  PrimingRow& add_column(const std::string& name,
     const CassValueType value_type, const std::string& value) {
     std::string cql_type = get_cql_type(value_type);
     if (value_type == CASS_VALUE_TYPE_LIST ||
@@ -73,7 +73,7 @@ public:
         + cql_type);
     }
 
-    return addColumn(name, cql_type, value);
+    return add_column(name, cql_type, value);
   }
 
   /**
@@ -84,7 +84,7 @@ public:
    * @param value Value for the column
    * @return PrimingRow instance
    */
-  PrimingRow& addColumn(const std::string& name,
+  PrimingRow& add_column(const std::string& name,
     const std::string& cql_value_type, const std::string& value) {
     //TODO: Add validation (mainly for parameterized types)
     // Ensure the column doesn't already exist
@@ -108,6 +108,9 @@ public:
       && std::equal(columns_.begin(), columns_.end(), rhs.columns_.begin(),
         ColumnsKeyEquality());
   }
+  bool operator!=(const PrimingRow& rhs) const {
+    return !(*this == rhs);
+  }
 
 protected:
   /**
@@ -115,7 +118,7 @@ protected:
    *
    * @param writer JSON writer to add the column types to
    */
-  void buildColumnTypes(
+  void build_column_types(
     rapidjson::PrettyWriter<rapidjson::StringBuffer>* writer) {
     // Initialize the column types JSON object
     writer->Key("column_types");
@@ -141,7 +144,7 @@ protected:
    *
    * @param writer JSON writer to add the row to
    */
-  void buildRow(rapidjson::PrettyWriter<rapidjson::StringBuffer>* writer) {
+  void build_row(rapidjson::PrettyWriter<rapidjson::StringBuffer>* writer) {
     // Initialize the row JSON object
     writer->StartObject();
 
@@ -302,9 +305,9 @@ public:
    * @param value Value (type|value) for the column
    * @return PrimingColumns instance
    */
-  PrimingRows& addColumn(PrimingRow columns) {
+  PrimingRows& add_row(PrimingRow columns) {
     // Make sure the columns can be added to the rows
-    if (!rows_.empty() && rows_.front() == columns) {
+    if (!rows_.empty() && rows_.front() != columns) {
       throw Exception(
         "Unable to Add Row: Columns are incompatible with previous row(s)");
     }
@@ -327,9 +330,9 @@ protected:
    *
    * @param writer JSON writer to add the column types to
    */
-  void buildColumnTypes(
+  void build_column_types(
     rapidjson::PrettyWriter<rapidjson::StringBuffer>* writer) {
-    rows_.front().buildColumnTypes(writer);
+    rows_.front().build_column_types(writer);
   }
 
   /**
@@ -337,13 +340,13 @@ protected:
    *
    * @param writer JSON writer to add the rows to
    */
-  void buildRows(rapidjson::PrettyWriter<rapidjson::StringBuffer>* rows) {
+  void build_rows(rapidjson::PrettyWriter<rapidjson::StringBuffer>* rows) {
     // Iterate over the rows and add each row to the rows object array
     rows->Key("rows");
     rows->StartArray();
     for (std::vector<PrimingRow>::iterator iterator = rows_.begin();
       iterator != rows_.end(); ++iterator) {
-      iterator->buildRow(rows);
+      iterator->build_row(rows);
     }
     rows->EndArray();
   }

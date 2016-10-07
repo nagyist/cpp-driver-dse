@@ -106,6 +106,20 @@ public:
    * @return True if node is ready to accept connections; false otherwise
    */
   bool is_node_up(unsigned int node);
+  /**
+   * Get the nodes in the cluster
+   *
+   * @param is_available True if only active/available nodes should be returned;
+   *                     false otherwise (DEFAULT: true)
+   * @return List of nodes in the cluster; available nodes only if
+   *         `is_available` is true
+   */
+  std::vector<unsigned int> nodes(bool is_available = true);
+  /**
+   * Prime the system tables (local and peers) for all the active nodes in the
+   * SCassandra cluster
+   */
+  void prime_system_tables();
 
   /**
    * Prime the queries on SCassandra cluster using the REST API
@@ -275,6 +289,19 @@ private:
    * @return True if node is available; false otherwise
    */
   bool is_node_available(const std::string& ip_address, unsigned short port);
+  /**
+   * Generate the token ranges (no v-nodes) for a single data center
+   *
+   * @param nodes Number of nodes to generate tokens for
+   * @return Token ranges for each node
+   */
+  std::vector<std::string> generate_token_ranges(unsigned int nodes);
+  /**
+   * Prime the system tables (local and peers) on the selected node
+   *
+   * @param node Node being primed
+   */
+  void prime_system_tables(unsigned int node);
 };
 
 } // namespace test

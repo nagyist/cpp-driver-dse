@@ -11,6 +11,7 @@
  * Connection integration tests
  */
 class SConnectionIntegrationTest : public SCassandraIntegration {
+public:
   void SetUp() {
     number_dc1_nodes_ = 3;
     SCassandraIntegration::SetUp();

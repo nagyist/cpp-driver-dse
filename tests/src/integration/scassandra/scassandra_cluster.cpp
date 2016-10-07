@@ -6,11 +6,13 @@
 */
 #include "scassandra_cluster.hpp"
 #include "exception.hpp"
+#include "options.hpp"
 #include "test_utils.hpp"
 
 #include "scoped_lock.hpp"
 #include "socket.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 #define SCASSANDRA_IP_PREFIX "127.0.0."
@@ -24,6 +26,7 @@
 #define OUTPUT_BUFFER_SIZE 10240
 #define SCASSANDRA_NAP 100
 #define SCASSANDRA_CONNECTION_RETRIES 600 // Up to 60 seconds for retry based on SCASSANDRA_NAP
+#define MAX_TOKEN static_cast<uint64_t>(INT64_MAX) - 1
 
 /**
  * HTTP request method
@@ -92,6 +95,7 @@ struct Process {
   /**
    * Generated command to execute for starting SCassandra process
    */
+
   char** spawn_command;
 
   Process(unsigned int node)
@@ -271,6 +275,27 @@ bool test::SCassandraCluster::stop_node(unsigned int node,
     return is_node_down(node);
   }
   return true;
+}
+
+std::vector<unsigned int> test::SCassandraCluster::nodes(
+  bool is_available /*= true*/) {
+  std::vector<unsigned int> nodes;
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    if (!is_available || iterator->second->is_running) {
+      nodes.push_back(iterator->first);
+    }
+  }
+  return nodes;
+}
+
+void test::SCassandraCluster::prime_system_tables() {
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    if (iterator->second->is_running) {
+      prime_system_tables(iterator->first);
+    }
+  }
 }
 
 void test::SCassandraCluster::prime_query(PrimingRequest request) {
@@ -573,4 +598,98 @@ bool test::SCassandraCluster::is_node_available(const std::string& ip_address,
 
   // Unable to establish connection to node
   return false;
+}
+
+std::vector<std::string> test::SCassandraCluster::generate_token_ranges(
+  unsigned int nodes) {
+  // Create and sort the token ranges
+  std::vector<int64_t> token_ranges;
+  for(unsigned int n = 0; n < nodes; ++n) {
+    int64_t token_range = static_cast<uint64_t>(((UINT64_MAX / nodes) * n)) -
+      MAX_TOKEN;
+    token_ranges.push_back(token_range);
+  }
+  std::sort(token_ranges.begin(), token_ranges.end());
+
+  // Convert the token ranges to a vector of strings
+  std::vector<std::string> token_ranges_s;
+  for(std::vector<int64_t>::iterator iterator = token_ranges.begin();
+    iterator != token_ranges.end(); ++iterator) {
+    std::stringstream token_range_stream;
+    token_range_stream << *iterator;
+    token_ranges_s.push_back(token_range_stream.str());
+  }
+  return token_ranges_s;
+}
+
+void test::SCassandraCluster::prime_system_tables(unsigned int node) {
+  // Generate the token ranges for the Murmur3Partitioner
+  std::vector<std::string> token_ranges =
+    generate_token_ranges(processes_.size());
+
+  // Prime the system.local and system.peers table
+  PrimingRows peers_rows = PrimingRows::builder();
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    unsigned int current_node = iterator->first;
+    std::string token = token_ranges.at(current_node - 1);
+
+    if (current_node == node) {
+      // Prime the system.local table
+      PrimingRequest system_local = PrimingRequest::builder()
+        .with_query_pattern("SELECT .* FROM system.local WHERE key='local'")
+        .with_consistency(CASS_CONSISTENCY_ANY)
+        .with_consistency(CASS_CONSISTENCY_ONE)
+        .with_consistency(CASS_CONSISTENCY_TWO)
+        .with_consistency(CASS_CONSISTENCY_THREE)
+        .with_consistency(CASS_CONSISTENCY_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_ALL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_SERIAL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
+        .with_rows(PrimingRows::builder()
+          .add_row(PrimingRow::builder()
+            .add_column("data_center", CASS_VALUE_TYPE_VARCHAR, "dc1")
+            .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "dc1")
+            .add_column("release_version", CASS_VALUE_TYPE_VARCHAR,
+              Options::server_version().to_string())
+            .add_column("partitioner", CASS_VALUE_TYPE_VARCHAR,
+              "org.apache.cassandra.dht.Murmur3Partitioner")
+            .add_column("tokens", "set<text>", "[" + token + "]")
+          )
+        );
+      prime_query(node, system_local);
+    } else {
+      std::stringstream address;
+      address << SCASSANDRA_IP_PREFIX << current_node;
+
+      peers_rows.add_row(PrimingRow::builder()
+        .add_column("peer", CASS_VALUE_TYPE_INET, address.str())
+        .add_column("data_center", CASS_VALUE_TYPE_VARCHAR, "dc1")
+        .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "dc1")
+        .add_column("release_version", CASS_VALUE_TYPE_VARCHAR,
+          Options::server_version().to_string())
+        .add_column("rpc_address", CASS_VALUE_TYPE_INET, address.str())
+        .add_column("tokens", "set<text>", "[" + token + "]"));
+    }
+  }
+
+  // Prime the system.peers table
+  PrimingRequest system_peers = PrimingRequest::builder()
+        .with_query_pattern("SELECT .* FROM system.peers")
+        .with_consistency(CASS_CONSISTENCY_ANY)
+        .with_consistency(CASS_CONSISTENCY_ONE)
+        .with_consistency(CASS_CONSISTENCY_TWO)
+        .with_consistency(CASS_CONSISTENCY_THREE)
+        .with_consistency(CASS_CONSISTENCY_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_ALL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
+        .with_consistency(CASS_CONSISTENCY_SERIAL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
+        .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
+        .with_rows(peers_rows);
+      prime_query(node, system_peers);
 }

@@ -63,8 +63,8 @@ public:
    * @param fixed_delay Delay in milliseconds before responding to the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withFixedDelay(const unsigned long fixed_delay_ms) {
-    then_.withFixedDelay(fixed_delay_ms);
+  PrimingRequest& with_fixed_delay(const unsigned long fixed_delay_ms) {
+    then_.with_fixed_delay(fixed_delay_ms);
     return *this;
   }
 
@@ -74,8 +74,8 @@ public:
    * @param result Response to the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withResult(const PrimingResult& result) {
-    then_.withResult(result);
+  PrimingRequest& with_result(const PrimingResult& result) {
+    then_.with_result(result);
     return *this;
   }
 
@@ -85,8 +85,8 @@ public:
    * @param rows Rows to return when responding to the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withRows(const PrimingRows& rows) {
-    then_.withRows(rows);
+  PrimingRequest& with_rows(const PrimingRows& rows) {
+    then_.with_rows(rows);
     return *this;
   }
 
@@ -96,8 +96,8 @@ public:
    * @param consistency Consistency level
    * @return PrimingRequest instance
    */
-  PrimingRequest& withConsistency(const CassConsistency consistency) {
-    when_.withConsistency(consistency);
+  PrimingRequest& with_consistency(const CassConsistency consistency) {
+    when_.with_consistency(consistency);
     return *this;
   }
 
@@ -107,9 +107,9 @@ public:
    * @param consistency Consistency levels for the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withConsistency(
+  PrimingRequest& with_consistency(
     const std::vector<CassConsistency>& consistency) {
-    when_.withConsistency(consistency);
+    when_.with_consistency(consistency);
     return *this;
   }
 
@@ -119,8 +119,8 @@ public:
    * @param keyspace Name of the keyspace
    * @return PrimingRequest instance
    */
-  PrimingRequest& withKeyspace(const std::string& keyspace) {
-    when_.withKeyspace(keyspace);
+  PrimingRequest& with_keyspace(const std::string& keyspace) {
+    when_.with_keyspace(keyspace);
     return *this;
   }
 
@@ -130,8 +130,8 @@ public:
    * @param query Query for the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withQuery(const std::string& query) {
-    when_.withQuery(query);
+  PrimingRequest& with_query(const std::string& query) {
+    when_.with_query(query);
     return *this;
   }
 
@@ -141,8 +141,8 @@ public:
    * @param query_pattern Query pattern for the request
    * @return PrimingRequest instance
    */
-  PrimingRequest& withQueryPattern(const std::string& query_pattern) {
-    when_.withQueryPattern(query_pattern);
+  PrimingRequest& with_query_pattern(const std::string& query_pattern) {
+    when_.with_query_pattern(query_pattern);
     return *this;
    }
 
@@ -152,8 +152,8 @@ public:
    * @param table Name of the table
    * @return PrimingRequest instance
    */
-  PrimingRequest& withTable(const std::string& table) {
-    when_.withTable(table);
+  PrimingRequest& with_table(const std::string& table) {
+    when_.with_table(table);
     return *this;
   }
 
@@ -200,11 +200,9 @@ private:
       writer->String(result_.json_value().c_str());
 
       // Determine if the rows and column types JSON objects should be added
-      if (rows_.empty()) {
-        throw Exception("Unable to Create THEN JSON Object: No rows available");
-      } else {
-        rows_.buildRows(writer);
-        rows_.buildColumnTypes(writer);
+      if (!rows_.empty()) {
+        rows_.build_rows(writer);
+        rows_.build_column_types(writer);
       }
 
       // Finalize the then JSON object
@@ -216,7 +214,7 @@ private:
      *
      * @param fixed_delay Delay in milliseconds before responding to the request
      */
-    void withFixedDelay(const unsigned long fixed_delay) {
+    void with_fixed_delay(const unsigned long fixed_delay) {
       fixed_delay_ms_ = fixed_delay;
     }
 
@@ -225,7 +223,7 @@ private:
      *
      * @param result Response to the request
      */
-    void withResult(const PrimingResult& result) {
+    void with_result(const PrimingResult& result) {
       result_ = result;
     }
 
@@ -234,7 +232,7 @@ private:
      *
      * @param rows Rows to return when responding to the request
      */
-    void withRows(const PrimingRows& rows) {
+    void with_rows(const PrimingRows& rows) {
       rows_ = rows;
     }
   };
@@ -269,8 +267,15 @@ private:
      * Build the when section for the priming request
      *
      * @param writer JSON writer to add the column types to
+     * @throws PrimingRequest::Exception If query and query pattern are present
      */
     void build(rapidjson::PrettyWriter<rapidjson::StringBuffer>* writer) {
+      // Determine if an exception should be thrown
+      if (!query_.empty() && !query_pattern_.empty()) {
+        throw PrimingRequest::Exception("Unable to Build WHEN: Query and query "
+          "pattern can not be used at the same time");
+      }
+
       // Initialize the when JSON object
       writer->Key("when");
       writer->StartObject();
@@ -300,7 +305,7 @@ private:
 
       // Determine if the query pattern JSON object should be added
       if (!query_pattern_.empty()) {
-        writer->Key("query_pattern");
+        writer->Key("queryPattern");
         writer->String(query_pattern_.c_str());
       }
 
@@ -319,7 +324,7 @@ private:
      *
      * @param consistency Consistency level
      */
-    void withConsistency(const CassConsistency consistency) {
+    void with_consistency(const CassConsistency consistency) {
       consistency_.push_back(consistency);
     }
 
@@ -328,7 +333,7 @@ private:
      *
      * @param consistency Consistency levels for the request
      */
-    void withConsistency(
+    void with_consistency(
       const std::vector<CassConsistency>& consistency) {
       consistency_ = consistency;
     }
@@ -338,7 +343,7 @@ private:
      *
      * @param keyspace Name of the keyspace
      */
-    void withKeyspace(const std::string& keyspace) {
+    void with_keyspace(const std::string& keyspace) {
       keyspace_ = keyspace;
     }
 
@@ -347,7 +352,7 @@ private:
      *
      * @param query Query for the request
      */
-    void withQuery(const std::string& query) {
+    void with_query(const std::string& query) {
       query_ = query;
     }
 
@@ -356,7 +361,7 @@ private:
      *
      * @param query_pattern Query pattern for the request
      */
-    void withQueryPattern(const std::string& query_pattern) {
+    void with_query_pattern(const std::string& query_pattern) {
       query_pattern_ = query_pattern;
     }
 
@@ -365,7 +370,7 @@ private:
      *
      * @param table Name of the table
      */
-    void withTable(const std::string& table) {
+    void with_table(const std::string& table) {
       table_ = table;
     }
 
