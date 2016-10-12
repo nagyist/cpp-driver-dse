@@ -12,6 +12,16 @@
 
 #include <uv.h>
 
+#define CHECK_SCC_AVAILABLE \
+  if (!scc_) { \
+    return; \
+  }
+
+#define SKIP_TEST_IF_SCC_UNAVAILABLE \
+  if (!scc_) { \
+    SKIP_TEST("SCassandra is unavailable"); \
+  }
+
 /**
  * Base class to provide common integration test functionality for tests against
  * SCassandra (Stubbed Cassandra)

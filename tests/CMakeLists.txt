@@ -106,7 +106,7 @@ if(DSE_BUILD_INTEGRATION_TESTS)
     # Build SCassandra server
     file(GLOB SCASSANDRA_SERVER_STANDALONE_JAR
       ${TESTS_SCASSANDRA_SERVER_SOURCE_DIR}/server/build/libs/scassandra-server_*-standalone.jar)
-    if (NOT EXISTS ${SCASSANDRA_SERVER_STANDALONE_JAR})
+    if(NOT EXISTS ${SCASSANDRA_SERVER_STANDALONE_JAR})
       message(STATUS "Building standalone SCassandra server")
       execute_process(COMMAND ${SCASSANDRA_SERVER_BUILD_SCRIPT} server:fatJar
         WORKING_DIRECTORY ${TESTS_SCASSANDRA_SERVER_SOURCE_DIR}
@@ -117,9 +117,14 @@ if(DSE_BUILD_INTEGRATION_TESTS)
   endif()
 
   # Determine if the SCassandra server will be available for the tests
-  if (EXISTS ${SCASSANDRA_SERVER_STANDALONE_JAR})
+  if(EXISTS ${SCASSANDRA_SERVER_STANDALONE_JAR})
     # Copy the standalone SCassandra server JAR file to output directory
     configure_file(${SCASSANDRA_SERVER_STANDALONE_JAR} ${CMAKE_BINARY_DIR} COPYONLY)
+    if(WIN32)
+      # Copy SCassandra server to additional locations for use with IDE
+      configure_file(${SCASSANDRA_SERVER_STANDALONE_JAR} ${CMAKE_BINARY_DIR}/tests COPYONLY)
+      configure_file(${SCASSANDRA_SERVER_STANDALONE_JAR} ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE} COPYONLY)
+    endif()
   else()
     message(WARNING "SCassandra Not Found: SCassandra support will be disabled")
   endif()

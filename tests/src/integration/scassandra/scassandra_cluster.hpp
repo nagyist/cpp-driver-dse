@@ -10,11 +10,15 @@
 
 // Make sure SCassandra server is available during compile time
 #ifdef DSE_USE_STANDALONE_SCASSANDRA_SERVER
+#include "exception.hpp"
 #include "priming_requests.hpp"
 #include "shared_ptr.hpp"
 
+#ifdef _CRT_SECURE_NO_WARNINGS
+# undef _CRT_SECURE_NO_WARNINGS
+#endif
 #include <mongoose.h>
-#include<rapidjson/document.h>
+#include <rapidjson/document.h>
 #include <uv.h>
 
 #include <cstdio>
@@ -33,6 +37,12 @@ namespace test {
  */
 class SCassandraCluster {
 public:
+  class Exception : public test::Exception {
+  public:
+    Exception(const std::string& message)
+      : test::Exception(message) {}
+  };
+
   /**
    * Initialize the SCassandra cluster
    */
@@ -95,6 +105,7 @@ public:
    *
    * @param node Node to check 'DOWN' status
    * @return True if node is no longer accepting connections; false otherwise
+   * @throws Exception if node is not valid
    */
   bool is_node_down(unsigned int node);
   /**
@@ -104,6 +115,7 @@ public:
    *
    * @param node Node to check 'UP' status
    * @return True if node is ready to accept connections; false otherwise
+   * @throws Exception if node is not valid or process is not running
    */
   bool is_node_up(unsigned int node);
   /**
@@ -279,6 +291,7 @@ private:
    *
    * @param node SCassandra node to check
    * @return True if node is available; false otherwise
+   * @throws Exception if node is not valid or process is not running
    */
   bool is_node_available(unsigned int node);
   /**

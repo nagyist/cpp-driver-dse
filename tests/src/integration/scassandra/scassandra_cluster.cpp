@@ -5,7 +5,6 @@
   license at http://www.datastax.com/terms/datastax-dse-driver-license-terms
 */
 #include "scassandra_cluster.hpp"
-#include "exception.hpp"
 #include "options.hpp"
 #include "test_utils.hpp"
 
@@ -26,6 +25,7 @@
 #define OUTPUT_BUFFER_SIZE 10240
 #define SCASSANDRA_NAP 100
 #define SCASSANDRA_CONNECTION_RETRIES 600 // Up to 60 seconds for retry based on SCASSANDRA_NAP
+#define SCASSANDRA_PROCESS_RETRIS 100 // Up to 10 seconds for retry based on SCASSANDRA_NAP
 #define MAX_TOKEN static_cast<uint64_t>(INT64_MAX) - 1
 
 /**
@@ -138,6 +138,14 @@ uv_mutex_t test::SCassandraCluster::mutex_;
 test::SCassandraCluster::SCassandraCluster() {
   // Initialize the mutex
   uv_mutex_init(&mutex_);
+
+  // Determine if SCassandra file exists
+  if (!test::Utils::file_exists(SCASSANDRA_SERVER_JAR)) {
+    std::stringstream message;
+    message << "Unable to find SCassandra JAR file ["
+      << SCASSANDRA_SERVER_JAR << "]";
+    throw Exception(message.str());
+  }
 }
 
 test::SCassandraCluster::~SCassandraCluster() {
@@ -192,16 +200,30 @@ bool test::SCassandraCluster::is_node_up(unsigned int node) {
 }
 
 bool test::SCassandraCluster::start_cluster() {
+  // Start each SCassandra node/process
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
     // Start the node but do not wait for the node to be up
     start_node(iterator->first, false);
   }
 
+  // Wait for each SCassandra node/process to be running
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    while (!iterator->second->is_running) {
+      test::Utils::msleep(SCASSANDRA_NAP);
+    }
+  }
+
   // Determine if the cluster is ready
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    if (!is_node_up(iterator->first)) {
+    try {
+      if (!is_node_up(iterator->first)) {
+        return false;
+      }
+    } catch (Exception e) {
+      LOG_ERROR(e.what());
       return false;
     }
   }
@@ -209,16 +231,30 @@ bool test::SCassandraCluster::start_cluster() {
 }
 
 bool test::SCassandraCluster::stop_cluster() {
+  // Stop each SCassandra node/process
   for (ProcessMap::iterator iterator = processes_.begin();
     // Stop the node but do not wait for the node to be down
     iterator != processes_.end(); ++iterator) {
     stop_node(iterator->first, false);
   }
 
+  // Wait for each SCassandra node/process to be finished
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    while (iterator->second->is_running) {
+      test::Utils::msleep(SCASSANDRA_NAP);
+    }
+  }
+
   // Determine if the cluster is down
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    if (!is_node_down(iterator->first)) {
+    try {
+      if (!is_node_down(iterator->first)) {
+        return false;
+      }
+    } catch (Exception e) {
+      LOG_ERROR(e.what());
       return false;
     }
   }
@@ -226,8 +262,8 @@ bool test::SCassandraCluster::stop_cluster() {
 }
 
 bool test::SCassandraCluster::start_node(unsigned int node,
-  bool wait_for_up /*true*/) {
-  ProcessMap::const_iterator iterator = processes_.find(node);
+  bool wait_for_up /*= true*/) {
+  ProcessMap::iterator iterator = processes_.find(node);
 
   // Make sure node is valid
   if (iterator == processes_.end()) {
@@ -249,8 +285,8 @@ bool test::SCassandraCluster::start_node(unsigned int node,
 }
 
 bool test::SCassandraCluster::stop_node(unsigned int node,
-  bool wait_for_down /*true*/) {
-  ProcessMap::const_iterator iterator = processes_.find(node);
+  bool wait_for_down /*= true*/) {
+  ProcessMap::iterator iterator = processes_.find(node);
 
   // Make sure node is valid
   if (iterator == processes_.end()) {
@@ -567,6 +603,7 @@ void test::SCassandraCluster::send_http_request(unsigned int node,
     nc->user_data = http_request;
     mg_set_protocol_http_websocket(nc);
     std::string http_message = generate_http_message(http_request);
+    std::cout << http_message << std::endl;
     mg_printf(nc, "%s", http_message.c_str());
   }
 
@@ -578,6 +615,15 @@ void test::SCassandraCluster::send_http_request(unsigned int node,
 }
 
 bool test::SCassandraCluster::is_node_available(unsigned int node) {
+  // Determine if the node is valid and is the process is running
+  ProcessMap::iterator iterator = processes_.find(node);
+  if (iterator == processes_.end()) {
+    std::stringstream message;
+    message << "Unable to Check Availability of Node: Node " << node
+      << " is not a valid node";
+    throw test::Exception(message.str());
+  }
+
   // Determine the IP address and port from the node requested
   std::stringstream ip_address;
   ip_address << SCASSANDRA_IP_PREFIX << node;

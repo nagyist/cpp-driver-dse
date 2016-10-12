@@ -28,10 +28,16 @@ SCassandraIntegration::~SCassandraIntegration() {
 }
 
 void SCassandraIntegration::SetUpTestCase() {
-  scc_ = new test::SCassandraCluster();
+  try {
+    scc_ = new test::SCassandraCluster();
+  } catch (SCassandraCluster::Exception scce) {
+    FAIL() << scce.what();
+  }
 }
 
 void SCassandraIntegration::SetUp() {
+  CHECK_SCC_AVAILABLE;
+
   // Initialize the SCassandra cluster instance
   // TODO: Allow for multiple DCs (two to start; mimic base class))
   unsigned int nodes = number_dc1_nodes_; // + number_dc2_nodes_;
@@ -52,11 +58,15 @@ void SCassandraIntegration::SetUp() {
 }
 
 void SCassandraIntegration::TearDownTestCase() {
+  CHECK_SCC_AVAILABLE;
+
   scc_->stop_cluster();
   is_scc_initialized_ = false;
 }
 
 void SCassandraIntegration::TearDown() {
+  CHECK_SCC_AVAILABLE;
+
   session_.close();
 
   // Reset the SCassandra cluster (if not being used for the entire test case)

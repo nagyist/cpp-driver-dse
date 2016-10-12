@@ -19,5 +19,7 @@ public:
 };
 
 TEST_F(SConnectionIntegrationTest, Connect) {
+  SKIP_TEST_IF_SCC_UNAVAILABLE;
+
   ASSERT_TRUE(true);
 }

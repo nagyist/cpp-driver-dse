@@ -10,6 +10,8 @@
 
 #include "objects/retry_policy.hpp"
 
+#include "error_response.hpp"
+#include "request.hpp"
 #include "retry_policy.hpp"
 
 /**
