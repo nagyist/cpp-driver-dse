@@ -95,40 +95,37 @@ struct Process {
   /**
    * Generated command to execute for starting SCassandra process
    */
-
-  char** spawn_command;
+  std::vector<std::string> spawn_command;
 
   Process(unsigned int node)
     : is_running(false) {
-
     // Create the spawn command
-    spawn_command = new char*[SCASSANDRA_SPAWN_COMMAND_LENGTH];
-    for (unsigned int n = 0; n < (SCASSANDRA_SPAWN_COMMAND_LENGTH - 1); ++n) {
-      spawn_command[n] = new char[SCASSANDRA_SPAWN_COMMAND_BUFFER]();
-    }
-    snprintf(spawn_command[0], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1, "java");
-    snprintf(spawn_command[1], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1, "-jar");
-    snprintf(spawn_command[2], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      "-Dscassandra.log.level=%s", SCASSANDRA_LOG_LEVEL);
-    snprintf(spawn_command[3], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      "-Dscassandra.admin.listen-address=%s%u", SCASSANDRA_IP_PREFIX, node);
-    snprintf(spawn_command[4], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      "-Dscassandra.admin.port=%u", (node + SCASSANDRA_REST_PORT_OFFSET));
-    snprintf(spawn_command[5], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      "-Dscassandra.binary.listen-address=%s%u", SCASSANDRA_IP_PREFIX, node);
-    snprintf(spawn_command[6], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      "-Dscassandra.binary.port=%u", SCASSANDRA_BINARY_PORT);
-    snprintf(spawn_command[7], SCASSANDRA_SPAWN_COMMAND_BUFFER - 1,
-      SCASSANDRA_SERVER_JAR);
-    spawn_command[8] = NULL;
-  }
-
-  ~Process() {
-    // Clean up the memory for the spawn command
-    for (unsigned int n = 0; n < (SCASSANDRA_SPAWN_COMMAND_LENGTH - 1); ++n) {
-      delete[] spawn_command[n];
-    }
-    delete[] spawn_command;
+    std::stringstream argument;
+    spawn_command.push_back("java");
+    spawn_command.push_back("-jar");
+    argument << "-Dscassandra.log.level="
+      << SCASSANDRA_LOG_LEVEL;
+    spawn_command.push_back(argument.str());
+    argument.str("");
+    argument << "-Dscassandra.admin.listen-address="
+      << SCASSANDRA_IP_PREFIX
+      << node;
+    spawn_command.push_back(argument.str());
+    argument.str("");
+    argument << "-Dscassandra.admin.port="
+      << (node + SCASSANDRA_REST_PORT_OFFSET);
+    spawn_command.push_back(argument.str());
+    argument.str("");
+    argument << "-Dscassandra.binary.listen-address="
+      << SCASSANDRA_IP_PREFIX
+      << node;
+    spawn_command.push_back(argument.str());
+    argument.str("");
+    argument << "-Dscassandra.binary.port="
+      << SCASSANDRA_BINARY_PORT;
+    spawn_command.push_back(argument.str());
+    argument.str("");
+    spawn_command.push_back(SCASSANDRA_SERVER_JAR);
   }
 };
 
@@ -155,7 +152,7 @@ test::SCassandraCluster::~SCassandraCluster() {
 void test::SCassandraCluster::create_cluster(unsigned int nodes /*= 1*/) {
   // Create the process for each node
   for (unsigned int n = 1; n <= nodes; ++n) {
-    processes_.insert(ProcessPair(n, new Process(n)));
+    processes_.insert(ProcessPair(n, Process(n)));
   }
 }
 
@@ -210,7 +207,7 @@ bool test::SCassandraCluster::start_cluster() {
   // Wait for each SCassandra node/process to be running
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    while (!iterator->second->is_running) {
+    while (!iterator->second.is_running) {
       test::Utils::msleep(SCASSANDRA_NAP);
     }
   }
@@ -241,7 +238,7 @@ bool test::SCassandraCluster::stop_cluster() {
   // Wait for each SCassandra node/process to be finished
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    while (iterator->second->is_running) {
+    while (iterator->second.is_running) {
       test::Utils::msleep(SCASSANDRA_NAP);
     }
   }
@@ -271,10 +268,10 @@ bool test::SCassandraCluster::start_node(unsigned int node,
   }
 
   // Ensure the process is not already running
-  SharedPtr<Process> process = iterator->second;
+  Process* process = &iterator->second;
   if (!process->is_running) {
     // Create SCassandra process (threaded)
-    uv_thread_create(&process->thread, handle_thread_create, process.get());
+    uv_thread_create(&process->thread, handle_thread_create, process);
   }
 
   // Wait for the node to become available
@@ -294,16 +291,13 @@ bool test::SCassandraCluster::stop_node(unsigned int node,
   }
 
   // Ensure the process is running
-  SharedPtr<Process> process = iterator->second;
-  if (process->is_running) {
-    // TODO: Add exceptions if the process can't be killed and thread joined
-    // TODO: Utilize the socket class to ensure the node is down
-    int error_code = uv_process_kill(&process->process, SIGTERM);
+  Process process = iterator->second;
+  if (process.is_running) {
+    // TODO: Add exceptions if the process can't be killed
+    int error_code = uv_process_kill(&process.process, SIGTERM);
     if (error_code != 0) {
       return false;
     }
-    error_code = uv_thread_join(&process->thread);
-    return error_code == 0;
   }
 
   // Wait for the node to become unavailable
@@ -318,7 +312,7 @@ std::vector<unsigned int> test::SCassandraCluster::nodes(
   std::vector<unsigned int> nodes;
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    if (!is_available || iterator->second->is_running) {
+    if (!is_available || iterator->second.is_running) {
       nodes.push_back(iterator->first);
     }
   }
@@ -328,7 +322,7 @@ std::vector<unsigned int> test::SCassandraCluster::nodes(
 void test::SCassandraCluster::prime_system_tables() {
   for (ProcessMap::iterator iterator = processes_.begin();
     iterator != processes_.end(); ++iterator) {
-    if (iterator->second->is_running) {
+    if (iterator->second.is_running) {
       prime_system_tables(iterator->first);
     }
   }
@@ -423,10 +417,19 @@ void test::SCassandraCluster::handle_thread_create(void* arg) {
   options.stdio[2].flags = static_cast<uv_stdio_flags>(UV_CREATE_PIPE | UV_WRITABLE_PIPE);
   options.stdio[2].data.stream = (uv_stream_t*) &error_output;
 
+  // Generate the spawn command for use with uv_spawn
+  const char* spawn_command[SCASSANDRA_SPAWN_COMMAND_LENGTH];
+  size_t index = 0;
+  for (std::vector<std::string>::iterator iterator = process->spawn_command.begin();
+  iterator != process->spawn_command.end(); ++iterator) {
+    spawn_command[index++] = iterator->data();
+  }
+  spawn_command[index] = NULL;
+
   // Create the options for the process
-  options.args = process->spawn_command;
+  options.args = const_cast<char**>(spawn_command);
   options.exit_cb = handle_exit;
-  options.file = process->spawn_command[0];
+  options.file = spawn_command[0];
 
   // Start the process
 #if UV_VERSION_MAJOR == 0
@@ -437,7 +440,7 @@ void test::SCassandraCluster::handle_thread_create(void* arg) {
   int error_code = uv_spawn(&loop, &process->process, &options);
 #endif
   if (error_code == 0) {
-    LOG("Launched " << process->spawn_command[0] << " with ID "
+    LOG("Launched " << spawn_command[0] << " with ID "
       << process->process.pid);
 
     // Start the output thread loops
@@ -603,7 +606,7 @@ void test::SCassandraCluster::send_http_request(unsigned int node,
     nc->user_data = http_request;
     mg_set_protocol_http_websocket(nc);
     std::string http_message = generate_http_message(http_request);
-    std::cout << http_message << std::endl;
+    LOG_DEBUG(http_request->response);
     mg_printf(nc, "%s", http_message.c_str());
   }
 

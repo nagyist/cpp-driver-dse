@@ -165,8 +165,8 @@ public:
   void remove_primed_queries(unsigned int node);
 
 private:
-  typedef std::map<unsigned int, SharedPtr<Process> > ProcessMap;
-  typedef std::pair<unsigned int,SharedPtr<Process> > ProcessPair;
+  typedef std::map<unsigned int, Process> ProcessMap;
+  typedef std::pair<unsigned int, Process> ProcessPair;
   /**
    * Processes for each node in the SCassandra cluster
    */

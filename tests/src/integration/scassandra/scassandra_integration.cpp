@@ -7,6 +7,7 @@
 
 #include "scassandra_integration.hpp"
 #include "priming_requests.hpp"
+#include "win_debug.hpp"
 
 // Initialize the static member variables
 SharedPtr<test::SCassandraCluster> SCassandraIntegration::scc_ = NULL;
@@ -42,8 +43,10 @@ void SCassandraIntegration::SetUp() {
   // TODO: Allow for multiple DCs (two to start; mimic base class))
   unsigned int nodes = number_dc1_nodes_; // + number_dc2_nodes_;
   if (!is_scc_initialized_) {
+    MemoryLeakListener::disable();
     scc_->create_cluster(nodes);
     scc_->start_cluster();
+    MemoryLeakListener::enable();
     is_scc_initialized_ = true;
   }
   scc_->prime_system_tables();
