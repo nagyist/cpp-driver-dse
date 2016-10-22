@@ -40,11 +40,14 @@ void SCassandraIntegration::SetUp() {
   CHECK_SCC_AVAILABLE;
 
   // Initialize the SCassandra cluster instance
-  // TODO: Allow for multiple DCs (two to start; mimic base class))
-  unsigned int nodes = number_dc1_nodes_; // + number_dc2_nodes_;
   if (!is_scc_initialized_) {
+    // Create the data center nodes vector
+    std::vector<unsigned int> data_center_nodes;
+    data_center_nodes.push_back(number_dc1_nodes_);
+    data_center_nodes.push_back(number_dc2_nodes_);
+
     MemoryLeakListener::disable();
-    scc_->create_cluster(nodes);
+    scc_->create_cluster(data_center_nodes);
     scc_->start_cluster();
     MemoryLeakListener::enable();
     is_scc_initialized_ = true;
@@ -52,7 +55,7 @@ void SCassandraIntegration::SetUp() {
   scc_->prime_system_tables();
 
   // Generate the default contact points
-  contact_points_ = generate_contact_points(scc_->get_ip_prefix(), nodes);
+  contact_points_ = scc_->cluster_contact_points();
 
   // Determine if the session connection should be established
   if (is_session_requested_) {

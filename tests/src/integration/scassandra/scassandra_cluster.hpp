@@ -42,9 +42,15 @@ public:
     Exception(const std::string& message)
       : test::Exception(message) {}
   };
+  /**
+   * Default DSE workload to apply (Cassandra)
+   */
+  static const std::vector<unsigned int> DEFAULT_DATA_CENTER_NODES;
 
   /**
    * Initialize the SCassandra cluster
+   *
+   * @throws SCassandraCluster::Exception If SCassandra JAR is unavailable
    */
   SCassandraCluster();
   /**
@@ -53,17 +59,40 @@ public:
    */
   ~SCassandraCluster();
   /**
-   * Create a single data center SCassandra cluster
+   * Get a comma separated list of IPv4 addresses for nodes in the active
+   * SCassandra cluster
    *
-   * @param nodes Number of nodes in the SCassandr cluster (default: 1)
+   * @param is_all True if all node IPv4 addresses should be returned; false
+   *               if only the `UP` nodes (default: true)
+   * @return Comma separated list of IPv4 addresses
    */
-  void create_cluster(unsigned int nodes = 1);
+   std::string cluster_contact_points(bool is_all = true);
   /**
-   * Get the IPv4 address prefix being utilized for the SCassandr cluster
+   * Create the SCassandra cluster; data centers and nodes within each data
+   * center
    *
-   * @return IPv4 address prefix used
+   * @param data_center_nodes Data center(s) to create in the SCassandra cluster
+   *                          (default: 1 data center with 1 node)
    */
-  std::string get_ip_prefix() const;
+  void create_cluster(
+    std::vector<unsigned int> data_center_nodes = DEFAULT_DATA_CENTER_NODES);
+  /**
+   * Create the SCassandra cluster; number of nodes in data center 1 and 2
+   *
+   * @param data_center_one_nodes Number of nodes in data center 1
+   * @param data_center_two_nodes Number of nodes in data center 2 (default: 0)
+   */
+  void create_cluster(unsigned int data_center_one_nodes,
+    unsigned int data_center_two_nodes = 0);
+  /**
+   * Get the IPv4 address prefix being utilized for the SCassandr cluster for a
+   * given data center
+   *
+   * @param data_center Data center to get IPv4 address prefix (default: 1)
+   * @return IPv4 address prefix used
+   * @throws SCassandraCluster::Exception If data center is not valid
+   */
+  std::string get_ip_prefix(unsigned int data_center = 1) const;
   /**
    * Start the SCassandra cluster
    *
@@ -167,10 +196,24 @@ public:
 private:
   typedef std::map<unsigned int, Process> ProcessMap;
   typedef std::pair<unsigned int, Process> ProcessPair;
+  typedef std::map<unsigned int, std::vector<Process*> > PeersMap;
+  typedef std::pair<unsigned int, std::vector<Process*> > PeersPair;
   /**
    * Processes for each node in the SCassandra cluster
    */
   ProcessMap processes_;
+  /**
+   * Peers for a node in the SCassandra cluster
+   */
+  PeersMap peers_;
+  /**
+   * Cassandra release version
+   */
+  std::string release_version_;
+  /**
+   * Schema version
+   */
+  std::string schema_version_;
   /**
    * Mutex for process piped buffer allocation and reads
    */
@@ -244,6 +287,13 @@ private:
   static void handle_connected(struct mg_connection* nc, int ev, void* ev_data);
 
   /**
+   * Create/Initialize the SCassandra processes for each node
+   *
+   * @param nodes Data center(s) to create in the SCassandra cluster
+   */
+  void create_processes(std::vector<unsigned int> nodes);
+
+  /**
    * Generate the HTTP message for the REST request.
    *
    * @param http_request HTTP request to generate message from
@@ -305,10 +355,12 @@ private:
   /**
    * Generate the token ranges (no v-nodes) for a single data center
    *
+   * @param nodes Data center to generate tokens for
    * @param nodes Number of nodes to generate tokens for
    * @return Token ranges for each node
    */
-  std::vector<std::string> generate_token_ranges(unsigned int nodes);
+  std::vector<std::string> generate_token_ranges(unsigned int data_center,
+    unsigned int nodes);
   /**
    * Prime the system tables (local and peers) on the selected node
    *

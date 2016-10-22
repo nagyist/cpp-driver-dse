@@ -10,14 +10,16 @@
 
 #include "scoped_lock.hpp"
 #include "socket.hpp"
+#include "values/uuid.hpp"
+#include "objects/uuid_gen.hpp"
 
 #include <algorithm>
 #include <sstream>
 
-#define SCASSANDRA_IP_PREFIX "127.0.0."
+#define SCASSANDRA_IP_PREFIX "127.0."
 #define SCASSANDRA_BINARY_PORT 9042
 #define SCASSANDRA_LOG_LEVEL "DEBUG"
-#define SCASSANDRA_REST_PORT_OFFSET 50000
+#define SCASSANDRA_REST_PORT_NODE_OFFSET 50000
 #define SCASSANDRA_SPAWN_COMMAND_LENGTH 9
 #define SCASSANDRA_SPAWN_COMMAND_BUFFER 64
 
@@ -27,6 +29,7 @@
 #define SCASSANDRA_CONNECTION_RETRIES 600 // Up to 60 seconds for retry based on SCASSANDRA_NAP
 #define SCASSANDRA_PROCESS_RETRIS 100 // Up to 10 seconds for retry based on SCASSANDRA_NAP
 #define MAX_TOKEN static_cast<uint64_t>(INT64_MAX) - 1
+#define DATA_CENTER_PREFIX "dc"
 
 /**
  * HTTP request method
@@ -81,6 +84,26 @@ struct HttpRequest {
  */
 struct Process {
   /**
+   * Data center for SCassandra process
+   */
+  unsigned int data_center;
+  /**
+   * Node for SCassandra process
+   */
+  unsigned int node;
+  /**
+   * Host ID for the SCassandra process (node information)
+   */
+  std::string host_id;
+  /**
+   * IPv4 address SCassandra process is listening on
+   */
+  std::string listen_address;
+  /**
+   * SCassandra admin port for interacting through REST API
+   */
+  unsigned short admin_port;
+  /**
    * Flag to check if the SCassandra process is running (spawned)
    */
   bool is_running;
@@ -97,40 +120,52 @@ struct Process {
    */
   std::vector<std::string> spawn_command;
 
-  Process(unsigned int node)
-    : is_running(false) {
+  /**
+   * Initialize the process instance; define the application spawn command
+   *
+   * @param data_center Data center the SCassandra instance will be part of
+   * @param node Node in the data center
+   */
+  Process(unsigned int data_center, unsigned int node)
+    : data_center(data_center)
+    , node(node)
+    , is_running(false) {
+    // Create the listen address and admin port for the node
+    std::stringstream listen_address_s;
+    listen_address_s << SCASSANDRA_IP_PREFIX << (data_center - 1) << "." << node;
+    listen_address = listen_address_s.str();
+    admin_port = node + SCASSANDRA_REST_PORT_NODE_OFFSET;
+    test::driver::Uuid uuid = test::driver::UuidGen().generate_random_uuid();
+    host_id = uuid.str();
+
     // Create the spawn command
     std::stringstream argument;
     spawn_command.push_back("java");
     spawn_command.push_back("-jar");
-    argument << "-Dscassandra.log.level="
-      << SCASSANDRA_LOG_LEVEL;
+    argument << "-Dscassandra.log.level=" << SCASSANDRA_LOG_LEVEL;
     spawn_command.push_back(argument.str());
     argument.str("");
-    argument << "-Dscassandra.admin.listen-address="
-      << SCASSANDRA_IP_PREFIX
-      << node;
+    argument << "-Dscassandra.admin.listen-address=" << listen_address;
     spawn_command.push_back(argument.str());
     argument.str("");
-    argument << "-Dscassandra.admin.port="
-      << (node + SCASSANDRA_REST_PORT_OFFSET);
+    argument << "-Dscassandra.admin.port=" << admin_port;
     spawn_command.push_back(argument.str());
     argument.str("");
-    argument << "-Dscassandra.binary.listen-address="
-      << SCASSANDRA_IP_PREFIX
-      << node;
+    argument << "-Dscassandra.binary.listen-address=" << listen_address;
     spawn_command.push_back(argument.str());
     argument.str("");
-    argument << "-Dscassandra.binary.port="
-      << SCASSANDRA_BINARY_PORT;
+    argument << "-Dscassandra.binary.port=" << SCASSANDRA_BINARY_PORT;
     spawn_command.push_back(argument.str());
     argument.str("");
     spawn_command.push_back(SCASSANDRA_SERVER_JAR);
   }
 };
 
-// Initialize the mutex
+// Initialize the mutex and default data center nodes
 uv_mutex_t test::SCassandraCluster::mutex_;
+const unsigned int DEFAULT_NODE[] = { 1 };
+const std::vector<unsigned int> test::SCassandraCluster::DEFAULT_DATA_CENTER_NODES(
+  DEFAULT_NODE, DEFAULT_NODE + sizeof(DEFAULT_NODE) / sizeof(DEFAULT_NODE[0]));
 
 test::SCassandraCluster::SCassandraCluster() {
   // Initialize the mutex
@@ -143,21 +178,86 @@ test::SCassandraCluster::SCassandraCluster() {
       << SCASSANDRA_SERVER_JAR << "]";
     throw Exception(message.str());
   }
+
+  // Determine the release version (for priming nodes)
+  if (Options::is_dse()) {
+    CCM::DseVersion dse_version(Options::server_version());
+    CCM::CassVersion cass_version = dse_version.get_cass_version();
+    if (cass_version == "0.0.0") {
+      throw Exception("Unable to determine Cassandra version from DSE version");
+    }
+    release_version_ = test::Utils::replace_all(cass_version.to_string(), "-",
+      ".");
+  }
+
+  // Generate the schema version (for priming nodes)
+  test::driver::Uuid uuid = test::driver::UuidGen().generate_random_uuid();
+  schema_version_ = uuid.str();
 }
 
 test::SCassandraCluster::~SCassandraCluster() {
+  peers_.clear();
   stop_cluster();
 }
 
-void test::SCassandraCluster::create_cluster(unsigned int nodes /*= 1*/) {
-  // Create the process for each node
-  for (unsigned int n = 1; n <= nodes; ++n) {
-    processes_.insert(ProcessPair(n, Process(n)));
+std::string test::SCassandraCluster::cluster_contact_points(bool is_all /*= true*/) {
+  std::stringstream contact_points;
+  for (ProcessMap::iterator iterator = processes_.begin();
+    iterator != processes_.end(); ++iterator) {
+    // Determine if all the nodes are being returned or just the available nodes
+    Process process = iterator->second;
+    if (is_all || is_node_up(iterator->first)) {
+      if (!contact_points.str().empty()) {
+        contact_points << ",";
+      }
+      contact_points << get_ip_prefix(process.data_center) << process.node;
+    }
+  }
+  return contact_points.str();
+}
+
+void test::SCassandraCluster::create_cluster(
+  std::vector<unsigned int> data_center_nodes /*= DEFAULT_DATA_CENTER_NODES*/) {
+  create_processes(data_center_nodes);
+
+  // Create the peers mapping for easy lookup
+  for (ProcessMap::iterator outer = processes_.begin();
+    outer != processes_.end(); ++outer) {
+    unsigned int node = outer->first;
+    std::vector<Process*> processes;
+    for (ProcessMap::iterator inner = processes_.begin();
+      inner != processes_.end(); ++inner) {
+      if (inner->first != node) {
+        if (inner->second.data_center == outer->second.data_center) {
+          processes.push_back(&inner->second);
+        }
+      }
+    }
+    peers_.insert(PeersPair(node, processes));
   }
 }
 
-std::string test::SCassandraCluster::get_ip_prefix() const {
-  return SCASSANDRA_IP_PREFIX;
+void test::SCassandraCluster::create_cluster(unsigned int data_center_one_nodes,
+  unsigned int data_center_two_nodes /*= 0*/) {
+  std::vector<unsigned int> data_center_nodes;
+  if (data_center_one_nodes > 0) {
+    data_center_nodes.push_back(data_center_one_nodes);
+  }
+  if (data_center_two_nodes > 0) {
+    data_center_nodes.push_back(data_center_two_nodes);
+  }
+  create_cluster(data_center_nodes);
+}
+
+std::string test::SCassandraCluster::get_ip_prefix(
+  unsigned int data_center /*= 1*/) const {
+  if (data_center == 0) {
+    throw Exception("Invalid Data Center: Must be greater than zero");
+  }
+
+  std::stringstream ip_prefix;
+  ip_prefix << SCASSANDRA_IP_PREFIX << (data_center - 1) << ".";
+  return ip_prefix.str();
 }
 
 bool test::SCassandraCluster::is_node_down(unsigned int node) {
@@ -528,6 +628,19 @@ void test::SCassandraCluster::handle_connected(struct mg_connection* nc, int ev,
   }
 }
 
+void test::SCassandraCluster::create_processes(std::vector<unsigned int> nodes) {
+  // Create the process for each data center and the nodes within
+  unsigned int data_center = 1;
+  unsigned int node = 1;
+  for (std::vector<unsigned int>::iterator iterator = nodes.begin();
+    iterator != nodes.end(); ++iterator) {
+    for (unsigned int n = 1; n <= *iterator; ++n) {
+      processes_.insert(ProcessPair(node++, Process(data_center, n)));
+    }
+    ++data_center;
+  }
+}
+
 std::string test::SCassandraCluster::generate_http_message(
   HttpRequest* http_request) const {
   // Determine the method of the the request
@@ -583,10 +696,19 @@ void test::SCassandraCluster::rest_server_post(unsigned int node,
 void test::SCassandraCluster::send_http_request(unsigned int node,
   HttpRequest* http_request)
   const {
+  // Determine if the node is valid and is the process is running
+  ProcessMap::const_iterator iterator = processes_.find(node);
+  if (iterator == processes_.end()) {
+    std::stringstream message;
+    message << "Unable to Find Node: Node " << node << " is not a valid node";
+    throw test::Exception(message.str());
+  }
+
   // Update the HTTP request with the host (address) information
+  std::string ip_address = iterator->second.listen_address;
+  unsigned short port = iterator->second.admin_port;
   std::stringstream address;
-  address << SCASSANDRA_IP_PREFIX << node << ":"
-    << (node + SCASSANDRA_REST_PORT_OFFSET);
+  address << ip_address << ":" << port;
   http_request->address = address.str();
   http_request->exit_status = 0;
 
@@ -627,12 +749,10 @@ bool test::SCassandraCluster::is_node_available(unsigned int node) {
     throw test::Exception(message.str());
   }
 
-  // Determine the IP address and port from the node requested
-  std::stringstream ip_address;
-  ip_address << SCASSANDRA_IP_PREFIX << node;
-
-  return is_node_available(ip_address.str(),
-    (node + SCASSANDRA_REST_PORT_OFFSET));
+  // Determine if the node is available
+  std::string ip_address = iterator->second.listen_address;
+  unsigned short port = iterator->second.admin_port;
+  return is_node_available(ip_address, port);
 }
 
 bool test::SCassandraCluster::is_node_available(const std::string& ip_address,
@@ -650,13 +770,14 @@ bool test::SCassandraCluster::is_node_available(const std::string& ip_address,
 }
 
 std::vector<std::string> test::SCassandraCluster::generate_token_ranges(
-  unsigned int nodes) {
+  unsigned int data_center, unsigned int nodes) {
   // Create and sort the token ranges
+  int offset = (data_center - 1) * 100;
   std::vector<int64_t> token_ranges;
   for(unsigned int n = 0; n < nodes; ++n) {
     int64_t token_range = static_cast<uint64_t>(((UINT64_MAX / nodes) * n)) -
       MAX_TOKEN;
-    token_ranges.push_back(token_range);
+    token_ranges.push_back(token_range + offset);
   }
   std::sort(token_ranges.begin(), token_ranges.end());
 
@@ -672,73 +793,116 @@ std::vector<std::string> test::SCassandraCluster::generate_token_ranges(
 }
 
 void test::SCassandraCluster::prime_system_tables(unsigned int node) {
-  // Generate the token ranges for the Murmur3Partitioner
-  std::vector<std::string> token_ranges =
-    generate_token_ranges(processes_.size());
+  // Determine if the node is valid and is the process is running
+  ProcessMap::iterator process_iterator = processes_.find(node);
+  if (process_iterator == processes_.end()) {
+    std::stringstream message;
+    message << "Unable to Prime System Tables: Node " << node
+      << " is not a valid node";
+    throw test::Exception(message.str());
+  }
+  unsigned int data_center = process_iterator->second.data_center;
+  unsigned int current_node = process_iterator->second.node;
+  std::string host_id = process_iterator->second.host_id;
+  std::string node_address = process_iterator->second.listen_address;
+
+  // Determine if the peers are valid (this should never error)
+  PeersMap::iterator peers_iterator = peers_.find(node);
+  if (peers_iterator == peers_.end()) {
+    std::stringstream message;
+    message << "Unable to Prime System Tables: Node " << node
+      << " did not define peers (this should never happen)";
+    throw test::Exception(message.str());
+  }
+  std::vector<Process*> peers = peers_iterator->second;
+  unsigned int nodes = peers.size() + 1;
 
   // Prime the system.local and system.peers table
+  std::stringstream data_center_name;
+    data_center_name << DATA_CENTER_PREFIX << data_center;
+  std::vector<std::string> token_ranges = generate_token_ranges(data_center,
+    nodes);
+  std::string token = token_ranges.at(current_node - 1);
+
+  // Prime the system.local table
+  PrimingRow row = PrimingRow::builder()
+    .add_column("bootstrapped", CASS_VALUE_TYPE_VARCHAR, "COMPLETED")
+    .add_column("broadcast_address", CASS_VALUE_TYPE_INET, node_address)
+    .add_column("data_center", CASS_VALUE_TYPE_VARCHAR,
+      data_center_name.str())
+    .add_column("host_id", CASS_VALUE_TYPE_UUID, host_id)
+    .add_column("listen_address", CASS_VALUE_TYPE_INET, node_address)
+    .add_column("partitioner", CASS_VALUE_TYPE_VARCHAR,
+      "org.apache.cassandra.dht.Murmur3Partitioner")
+    .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "rack1") //TODO: Allow for multiple racks
+    .add_column("release_version", CASS_VALUE_TYPE_VARCHAR, release_version_)
+    .add_column("rpc_address", CASS_VALUE_TYPE_INET, node_address)
+    .add_column("schema_version", CASS_VALUE_TYPE_UUID, schema_version_)
+    .add_column("tokens", "set<text>", "[" + token + "]");
+  if (Options::is_dse()) {
+    row.add_column("dse_version", CASS_VALUE_TYPE_VARCHAR,
+        Options::server_version().to_string())
+      .add_column("graph", CASS_VALUE_TYPE_BOOLEAN, "false")
+      .add_column("workload", CASS_VALUE_TYPE_VARCHAR, "Cassandra");
+  }
+  PrimingRequest system_local = PrimingRequest::builder()
+    .with_query_pattern("SELECT .* FROM system.local WHERE key='local'")
+    .with_consistency(CASS_CONSISTENCY_ANY)
+    .with_consistency(CASS_CONSISTENCY_ONE)
+    .with_consistency(CASS_CONSISTENCY_TWO)
+    .with_consistency(CASS_CONSISTENCY_THREE)
+    .with_consistency(CASS_CONSISTENCY_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_ALL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_SERIAL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
+    .with_rows(PrimingRows::builder().add_row(row));
+  prime_query(current_node, system_local);
+
+  // Generate the rows for the system.peers table
   PrimingRows peers_rows = PrimingRows::builder();
-  for (ProcessMap::iterator iterator = processes_.begin();
-    iterator != processes_.end(); ++iterator) {
-    unsigned int current_node = iterator->first;
-    std::string token = token_ranges.at(current_node - 1);
+  for (std::vector<Process*>::iterator iterator = peers.begin();
+    iterator != peers.end(); ++iterator) {
+    Process* process = *iterator;
+    current_node = process->node;
+    host_id = process->host_id;
+    node_address = process->listen_address;
+    token = token_ranges.at(current_node - 1);
 
-    if (current_node == node) {
-      // Prime the system.local table
-      PrimingRequest system_local = PrimingRequest::builder()
-        .with_query_pattern("SELECT .* FROM system.local WHERE key='local'")
-        .with_consistency(CASS_CONSISTENCY_ANY)
-        .with_consistency(CASS_CONSISTENCY_ONE)
-        .with_consistency(CASS_CONSISTENCY_TWO)
-        .with_consistency(CASS_CONSISTENCY_THREE)
-        .with_consistency(CASS_CONSISTENCY_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_ALL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_SERIAL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
-        .with_rows(PrimingRows::builder()
-          .add_row(PrimingRow::builder()
-            .add_column("data_center", CASS_VALUE_TYPE_VARCHAR, "dc1")
-            .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "dc1")
-            .add_column("release_version", CASS_VALUE_TYPE_VARCHAR,
-              Options::server_version().to_string())
-            .add_column("partitioner", CASS_VALUE_TYPE_VARCHAR,
-              "org.apache.cassandra.dht.Murmur3Partitioner")
-            .add_column("tokens", "set<text>", "[" + token + "]")
-          )
-        );
-      prime_query(node, system_local);
-    } else {
-      std::stringstream address;
-      address << SCASSANDRA_IP_PREFIX << current_node;
-
-      peers_rows.add_row(PrimingRow::builder()
-        .add_column("peer", CASS_VALUE_TYPE_INET, address.str())
-        .add_column("data_center", CASS_VALUE_TYPE_VARCHAR, "dc1")
-        .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "dc1")
-        .add_column("release_version", CASS_VALUE_TYPE_VARCHAR,
+    PrimingRow row = PrimingRow::builder()
+      .add_column("data_center", CASS_VALUE_TYPE_VARCHAR, data_center_name.str())
+      .add_column("host_id", CASS_VALUE_TYPE_UUID, host_id)
+      .add_column("peer", CASS_VALUE_TYPE_INET, node_address)
+      .add_column("rack", CASS_VALUE_TYPE_VARCHAR, "rack1") //TODO: Allow for multiple racks
+      .add_column("release_version", CASS_VALUE_TYPE_VARCHAR, release_version_)
+      .add_column("rpc_address", CASS_VALUE_TYPE_INET, node_address)
+      .add_column("schema_version", CASS_VALUE_TYPE_UUID, schema_version_)
+      .add_column("tokens", "set<text>", "[" + token + "]");
+    if (Options::is_dse()) {
+      row.add_column("dse_version", CASS_VALUE_TYPE_VARCHAR,
           Options::server_version().to_string())
-        .add_column("rpc_address", CASS_VALUE_TYPE_INET, address.str())
-        .add_column("tokens", "set<text>", "[" + token + "]"));
+        .add_column("graph", CASS_VALUE_TYPE_BOOLEAN, "false")
+        .add_column("workload", CASS_VALUE_TYPE_VARCHAR, "Cassandra");
     }
+    peers_rows.add_row(row);
   }
 
   // Prime the system.peers table
   PrimingRequest system_peers = PrimingRequest::builder()
-        .with_query_pattern("SELECT .* FROM system.peers")
-        .with_consistency(CASS_CONSISTENCY_ANY)
-        .with_consistency(CASS_CONSISTENCY_ONE)
-        .with_consistency(CASS_CONSISTENCY_TWO)
-        .with_consistency(CASS_CONSISTENCY_THREE)
-        .with_consistency(CASS_CONSISTENCY_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_ALL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
-        .with_consistency(CASS_CONSISTENCY_SERIAL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
-        .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
-        .with_rows(peers_rows);
-      prime_query(node, system_peers);
+    .with_query_pattern("SELECT .* FROM system.peers")
+    .with_consistency(CASS_CONSISTENCY_ANY)
+    .with_consistency(CASS_CONSISTENCY_ONE)
+    .with_consistency(CASS_CONSISTENCY_TWO)
+    .with_consistency(CASS_CONSISTENCY_THREE)
+    .with_consistency(CASS_CONSISTENCY_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_ALL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_EACH_QUORUM)
+    .with_consistency(CASS_CONSISTENCY_SERIAL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_SERIAL)
+    .with_consistency(CASS_CONSISTENCY_LOCAL_ONE)
+    .with_rows(peers_rows);
+  prime_query(node, system_peers);
 }
